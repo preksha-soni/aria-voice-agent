@@ -30,9 +30,30 @@ ORDERS = {
 }
 
 
+WORDS = {"zero": "0", "oh": "0", "one": "1", "two": "2", "three": "3", "four": "4",
+         "five": "5", "six": "6", "seven": "7", "eight": "8", "nine": "9"}
+
+
+def spoken_to_digits(text: str) -> str:
+    """'one zero one' -> '101', 'triple nine' -> '999', 'ORD-101' -> '101'."""
+    out, mult = [], 1
+    for t in re.findall(r"[a-z]+|\d+", (text or "").lower()):
+        if t == "double":
+            mult = 2
+        elif t == "triple":
+            mult = 3
+        elif t in WORDS:
+            out.append(WORDS[t] * mult)
+            mult = 1
+        elif t.isdigit():
+            out.append(t)
+            mult = 1
+    return "".join(out)
+
+
 def normalize_id(raw: str) -> str | None:
-    m = re.search(r"(\d{3,})", raw or "")
-    return f"ORD-{m.group(1)}" if m else None
+    digits = spoken_to_digits(raw)
+    return f"ORD-{digits}" if len(digits) >= 3 else None
 
 
 def get_order_details(order_id: str = "", cancelled=()) -> dict:
