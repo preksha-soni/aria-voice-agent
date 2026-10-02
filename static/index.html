@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aria - Aura Skincare Voice Agent</title>
+<style>
+:root{--bg:#faf7f2;--fg:#1f2a24;--card:#fff;--line:#e4ddd0;--accent:#2f6b4f;--mut:#6b7570}
+@media (prefers-color-scheme:dark){:root{--bg:#141a17;--fg:#e8efe9;--card:#1d2621;--line:#2c3832;--accent:#6fbf98;--mut:#93a39a}}
+*{box-sizing:border-box}body{margin:0;font:15px/1.5 system-ui,sans-serif;background:var(--bg);color:var(--fg)}
+main{max-width:980px;margin:auto;padding:20px;display:grid;gap:16px;grid-template-columns:1.3fr 1fr}
+@media(max-width:760px){main{grid-template-columns:1fr}}
+h1{margin:0;font-size:20px;grid-column:1/-1}h2{margin:0 0 8px;font-size:14px;color:var(--mut);text-transform:uppercase;letter-spacing:.05em}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px}
+button{font:inherit;padding:10px 18px;border-radius:8px;border:0;cursor:pointer;color:#fff;background:var(--accent)}
+button.end{background:#b3433b}button:disabled{opacity:.4;cursor:not-allowed}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+#state{display:inline-flex;align-items:center;gap:8px;padding:6px 14px;border-radius:99px;border:1px solid var(--line);font-weight:600}
+#dot{width:10px;height:10px;border-radius:50%;background:#999}
+.listening #dot{background:#2e9e5b;animation:p 1.2s infinite}.thinking #dot{background:#e0a020;animation:p .6s infinite}.speaking #dot{background:#3b7be0;animation:p .8s infinite}
+@keyframes p{50%{transform:scale(1.6);opacity:.5}}
+#log{height:300px;overflow:auto;margin-top:12px;display:flex;flex-direction:column;gap:8px}
+.m{padding:8px 12px;border-radius:10px;max-width:85%}.Customer{align-self:flex-end;background:var(--accent);color:#fff}.Aria{background:var(--bg);border:1px solid var(--line)}
+.tool{font:12px monospace;color:var(--mut);align-self:center}
+table{width:100%;border-collapse:collapse;font-size:13px}td,th{padding:6px 4px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+pre{background:var(--bg);border:1px solid var(--line);padding:10px;border-radius:8px;overflow:auto;font-size:12px}
+.hint{color:var(--mut);font-size:13px}code{background:var(--bg);padding:1px 5px;border-radius:4px}
+</style></head><body><main>
+<h1>Aria &middot; Aura Skincare Voice Support</h1>
+<section class="card">
+  <div class="row">
+    <button id="start">Start Call</button><button id="end" class="end" disabled>End Call</button>
+    <span id="state"><span id="dot"></span><span id="stateText">Idle</span></span>
+  </div>
+  <label class="hint"><input type="checkbox" id="barge"> Allow interruption (turn off if you use speakers and the agent hears itself)</label>
+  <div id="log" aria-live="polite"></div>
+  <p class="hint" id="live"></p>
+  <p class="hint">Use Chrome or Edge and allow the microphone. Try: <code>Where is ORD-101?</code> &middot; <code>I bought this 20 days ago and opened it, can I return it?</code> &middot; <code>Book me a flight to Goa</code></p>
+</section>
+<section class="card"><h2>Test orders</h2><table id="orders"></table></section>
+<section class="card" id="post" style="grid-column:1/-1;display:none">
+  <h2>Post-call transcript</h2><div id="tr"></div>
+  <h2 style="margin-top:14px">Structured outcome (JSON)</h2><pre id="json"></pre>
+</section></main>
+<script>
+const $=id=>document.getElementById(id);
+const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+let muted=false,rec,sid,active=false,state='idle',ctrl=null,queue=[],speakingNow=false,streamDone=true,bubble=null;
+
+fetch('/orders').then(r=>r.json()).then(o=>{
+  $('orders').innerHTML='<tr><th>ID</th><th>Customer / Product</th><th>Status</th></tr>'+Object.entries(o).map(([k,v])=>
+   `<tr><td><b>${k}</b></td><td>${v.customer}<br>${v.product}<br>&#8377;${v.value}</td><td>${v.status}<br><small>${v.courier?v.courier+' '+v.tracking+'<br>':''}${v.notes}</small></td></tr>`).join('');});
+
+function setState(s){state=s;$('state').className=s;$('stateText').textContent={idle:'Idle',listening:'Listening',thinking:'Thinking',speaking:'Speaking'}[s];}
+function addMsg(who,text){const d=document.createElement('div');d.className='m '+who;d.textContent=text;$('log').append(d);$('log').scrollTop=1e9;return d;}
+function addTool(t){const d=document.createElement('div');d.className='tool';d.textContent=`tool: ${t.name}(${JSON.stringify(t.input)}) -> ${(t.output.found||t.output.success)?'ok':'failed'}`;$('log').append(d);}
+
+function pickVoice(){const v=speechSynthesis.getVoices();return v.find(x=>x.lang==='en-IN'&&/female|neerja|heera|veena|google/i.test(x.name))||v.find(x=>x.lang==='en-IN')||v.find(x=>x.lang.startsWith('en'));}
+function speakNext(){
+  if(speakingNow)return;
+  const t=queue.shift();
+  if(!t){ if(streamDone&&active){setState('listening');setTimeout(()=>{if(!speakingNow&&active){muted=false;try{rec.start()}catch(e){}}},1000);} return; }
+  const u=new SpeechSynthesisUtterance(t);u.voice=pickVoice();u.lang='en-IN';u.rate=1.05;
+  speakingNow=true;setState('speaking');if(!$('barge').checked){muted=true;try{rec.abort()}catch(e){}}
+  u.onend=u.onerror=()=>{speakingNow=false;speakNext();};
+  speechSynthesis.speak(u);
+}
+function enqueue(t){t=t.trim();if(t){queue.push(t);speakNext();}}
+function interrupt(){muted=false;speechSynthesis.cancel();queue=[];speakingNow=false;if(ctrl)ctrl.abort();streamDone=true;setState('listening');}
+
+async function send(text){
+  addMsg('Customer',text);setState('thinking');
+  ctrl=new AbortController();streamDone=false;bubble=addMsg('Aria','');let buf='';
+  try{
+    const r=await fetch('/chat',{method:'POST',headers:{'Content-Type':'application/json'},signal:ctrl.signal,body:JSON.stringify({session_id:sid,message:text})});
+    const rd=r.body.getReader(),dec=new TextDecoder();let pend='';
+    while(true){
+      const {value,done}=await rd.read();if(done)break;
+      pend+=dec.decode(value,{stream:true});const lines=pend.split('\n');pend=lines.pop();
+      for(const l of lines){if(!l)continue;const e=JSON.parse(l);
+        if(e.type==='text'){bubble.textContent+=e.d;buf+=e.d;
+          let m;while((m=buf.match(/^(.+?[.!?\u0964])(\s|$)/s))){enqueue(m[1]);buf=buf.slice(m[0].length);}}
+        else if(e.type==='tool'){addTool(e);}else if(e.type==='error'){$('live').textContent='Server error: '+e.d;}
+      }}
+    enqueue(buf);
+  }catch(err){if(err.name!=='AbortError'){bubble.textContent='(connection problem)';}}
+  streamDone=true;if(!speakingNow&&!queue.length&&active)setState('listening');
+}
+
+function initRec(){
+  rec=new SR();rec.continuous=true;rec.interimResults=true;rec.lang='en-IN';
+  rec.onresult=e=>{if(muted)return;
+    for(let i=e.resultIndex;i<e.results.length;i++){
+      const res=e.results[i],txt=res[0].transcript.trim();
+      if(!res.isFinal){
+        $('live').textContent='Hearing: '+txt;
+        if($('barge').checked&&(state==='speaking'||state==='thinking')&&txt.split(/\s+/).length>=2)interrupt();
+      }else{$('live').textContent='';
+        if(txt&&(state==='listening'||$('barge').checked))send(txt);}
+    }};
+  rec.onend=()=>{if(active&&!muted)try{rec.start()}catch(e){}};
+  rec.onerror=e=>{if(e.error==='not-allowed'){alert('Microphone permission denied.');endCall();}};
+  rec.start();
+}
+
+$('start').onclick=async()=>{
+  if(!SR){alert('Speech recognition needs Chrome or Edge.');return;}
+  try{(await navigator.mediaDevices.getUserMedia({audio:true})).getTracks().forEach(t=>t.stop());}catch{alert('Please allow microphone access.');return;}
+  $('log').innerHTML='';$('post').style.display='none';
+  const r=await (await fetch('/start',{method:'POST'})).json();sid=r.session_id;active=true;
+  $('start').disabled=true;$('end').disabled=false;
+  addMsg('Aria',r.greeting);streamDone=true;initRec();enqueue(r.greeting);
+};
+async function endCall(){
+  if(!active)return;active=false;rec&&rec.stop();interrupt();setState('idle');
+  $('start').disabled=false;$('end').disabled=true;$('live').textContent='Generating summary...';
+  const r=await (await fetch('/summary',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:sid})})).json();
+  $('live').textContent='';
+  $('tr').innerHTML='';r.transcript.forEach(m=>{const d=document.createElement('div');d.innerHTML=`<b>${m.speaker}:</b> `;d.append(m.text);$('tr').append(d);});
+  $('json').textContent=JSON.stringify(r.outcome,null,2);$('post').style.display='block';$('post').scrollIntoView({behavior:'smooth'});
+}
+$('end').onclick=endCall;speechSynthesis.onvoiceschanged=()=>{};
+</script></body></html>
